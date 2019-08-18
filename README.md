@@ -4,4 +4,4 @@ An use case for Temporal DB
 .
 .
 .
-Work in progress :)
+For more infos visit http://azzolinsteve.altervista.org/pages/use-case-temporal-db/temporal.html

@@ -1,0 +1,1026 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+        <meta name="keywords" content="Postgres, Temporal tables, valid state time table" />
+        <meta name="description" content="Overview on temporal tables with Postgresql 9.5" />
+        <meta name="author" content="Steve Azzolin" />
+        
+        <title>PSOC temporal tables</title>
+        <link rel="stylesheet" type="text/css" href="style.css" />        
+    </head>
+    <body class="typora-export">
+
+        <div id="write" class="is-node">
+            <h1>Temporal tables with PostgreSQL 9.5</h1>
+            <hr>
+            <hr>
+
+            <h4>11/08/2019</h4>
+
+            <h3>
+                <a name="header-n8" class="md-header-anchor "></a>Introduction
+            </h3>
+
+            <p>
+                The goal of this proof of concepts is a brief introduction on main concepts of temporal databases. Out use case is a simplified version of <strong>SanityManager</strong>
+                Web Application that I developed, with my teammates, for the course <strong>Introduction to Web Programming</strong> (@ Unitn 2019).
+            </p>
+            <p>
+               After a simple introduction on these topic will follow a focus on performance, where I show how to interpret correctly the semantic of our application to reduce
+               overhead introduced by strict constraints.
+            </p>
+            <p>
+                <strong>Temporal databases</strong> aren't a special kind of black magic, but a tecnique to project and implements tables and queries to give more importance to the temporal 
+                semantics of the application. There are 3 main kinds of temporal tables :
+                <ul>
+                    <li>Valid state time</li>
+                    <li>Transaction time table</li>
+                    <li>Bitemporal tables</li>
+                </ul>
+            </p>
+
+            <hr>
+            
+            <h3>
+                <a name="header-n8" class="md-header-anchor"></a>Use case
+            </h3>
+            <p>
+                Let's analyze for a moment the basic tables that we will use in nexts chapters. We have these 5 tables :
+                <ul>
+                    <li> <strong>District(id, name)</strong>
+                        <ul>
+                            <li>PK: (id)</li>
+                        </ul>
+                    </li>
+                    <li><strong>Doctors(id, name, surname, id_district, on_duty, on_service)</strong>  (on_duty=F --> stopped working, on_service=F --> temporarily unavailable)
+                        <ul>
+                            <li>PK: (id)</li>
+                            <li>FK: (id_district) TO District (id)</li>
+                        </ul>
+                    </li>
+                    <li><strong>Patients(id, name, surname, id_district, id_doctor, enabled)</strong> (enabled=F --> the user can't login to the system)
+                        <ul>
+                            <li>PK: (id)</li>
+                            <li>FK: (id_district) TO District (id)</li>
+                            <li>FK: (id_doctor) TO Doctors (id)</li>
+                        </ul>
+                    </li>
+                    <li><strong>Photos(id, id_patient, path)</strong>
+                        <ul>
+                            <li>PK: (id)</li>
+                            <li>FK: (id_patient) TO Patients (id)</li>
+                        </ul>
+                    </li>
+                    <li><strong>Prescriptions(id, id_patient, id_doctor, time)</strong>
+                        <ul>
+                            <li>PK: (id)</li>
+                            <li>FK: (id_patient) TO Patients (id)</li>
+                            <li>FK: (id_doctor) TO Doctors (id)</li>
+                        </ul>
+                    </li>
+                </ul>
+            </p>
+            <p>
+                We want to temporalize <strong>Patients</strong> and <strong>Doctors</strong> to accurately capture the evolution of their status over time (and in particular
+                the changing of patient's doctors and the period during a doctor is on duty).
+                For some applications temporalization is useless (when we are interested only on the current state of data) but for other applications it could be
+                an additional feature (we are in this case) where <code>hand made</code> solution for temporalization could be acceptable.
+                But we must consider situations where temporalization is <strong>essential</strong>, for example :
+
+                <blockquote>
+                    <p>
+                        Managers of a livestock need to store the historry of which steers shared the same stable and the relative period. So if
+                        an epidemic breaks out doctors can immediately find steers that are probably contaminated starting from a single
+                        infected steers.
+                    </p>
+                </blockquote>
+
+                In this case if we mantain only the current state (updating subsequently the steer's tuple) we wouldn't be able to reconstruct the past history to find potential 
+                contaminated steers.
+                So we should study a system that can store <strong>consistently</strong> current data and past data (some applications need also future data, f.e for booking 
+                rooms/flight/etc..).
+            </p>
+            <hr>
+
+            <h3>
+                <a name="header-n8" class="md-header-anchor"></a>Valid state time tables
+            </h3>
+            <p>
+                <strong>Valid state time tables</strong> allows to represent the period of time in which a specific
+                tuple should be considered valid.
+                <strong>Valid time</strong> is the time for which a fact is true in the real world.
+            </p>
+            <p>
+                We add 2 DATE columns to the basic definitions of tables above, so we can decribe the period of time where the tuple was/is valid. If the <strong>valid time</strong>
+                overlaps the current date, the tuple is valid at current time. <br/> <br/>
+                <code>
+                    ALTER TABLE Patients ADD COLUMN start_date DATE not null,end_date DATE not null;<br/>
+                    &nbsp;ALTER TABLE Doctors ADD COLUMN start_date DATE not null,end_date DATE not null;
+                </code>
+            </p>
+            <p>
+                If we want to represent the fact that a tuple is currently valid (the validity started in the past and is still valid, we don't know when It will become not valid)
+                we must use a special date value, since It is not possible to continuously update <strong>end_date</strong> to NOW().
+                For example we could adopt <code>9999-01-01</code> as special date meaning <i>forever/current</i>.
+            </p>
+
+            <p>
+                So we could obtain something like this :
+                <blockquote>
+                    <code>
+                        (1,'Steve','Azzolin',15,1,TRUE,'2018-01-01','2019-01-01') <br/>
+                        &nbsp;(1,'Steve','Azzolin',15,2,TRUE,'2019-01-01','9999-01-01')
+                    </code>
+                    <p>
+                        Here we have that the patient with id 1 had doctor with id 1 for the year 2018, but than at the beginning of 2019 the doctor changed.
+                    </p>
+                </blockquote>
+            </p>
+
+            <p>
+                The previous example introduces the need to redefine the concept of <strong>PRIMARY KEY</strong> since we want to store more tuples for the same user.
+                Later we will see how this constraint is translated.
+            </p>
+
+            <blockquote>
+                Using <strong>TIMESTAMP</strong> columns instead <strong>DATE</strong> we can allow the system to store more than one update per day.
+            </blockquote>
+
+            <hr/>
+            <h3>
+                <a name="header-n8" class="md-header-anchor"></a>Implementation details
+            </h3>
+            <p>
+                We have already discussed above that the simple <strong>PRIMARY KEY</strong> constraint, as usual defined via a simple index, is not possible. We must redefine
+                such constraint. In the following chapters we will define many constraint. The common point between these constraint will be <strong>DEFERRABILITY.</strong>
+            </p>
+
+            <p>
+                Many constraint (and also queries) are composed by many statements that are part of a single transaction. The desired behaviour is that constraint are checked
+                only when each statement is ended, to check the final status of tables, not the multiple intermediate stages where constraint could be not satified even if 
+                the final status of the table is correct.
+            </p>
+
+            <blockquote>
+                <strong>MYSQL</strong> doesn't provide the possibility of having deferrable constraints or triggers. <br/>
+                <strong>PGSQL 9.5 </strong> offers only the possibility to have <strong>CONSTRAINT TRIGGER</strong> deferrable, but It's enough.
+            </blockquote>
+
+
+            <hr />
+            <h3>
+                <a name="header-constraints" class="md-header-anchor"></a>Implementing valid state time tables
+            </h3>
+            <p>
+                We have the following tables:
+                <ul>
+                    <li> <strong>District(id, name)</strong>
+                        <ul>
+                            <li>PK: (id)</li>
+                        </ul>
+                    </li>
+                    <li><strong>Doctors(id, name, surname, id_district, on_duty, on_service, start_date, end_date)</strong>
+                        <ul>
+                            <li>PK: (id)</li>
+                            <li>FK: (id_district) TO District (id)</li>
+                        </ul>
+                    </li>
+                    <li><strong>Patients(id, name, surname, id_district, id_doctor, enabled, start_date, end_date)</strong>
+                        <ul>
+                            <li>PK: (id)</li>
+                            <li>FK: (id_district) TO District (id)</li>
+                            <li>FK: (id_doctor) TO Doctors (id)</li>
+                        </ul>
+                    </li>
+                    <li><strong>Photos(id, id_patient, path)</strong>
+                        <ul>
+                            <li>PK: (id)</li>
+                            <li>FK: (id_patient) TO Patients (id)</li>
+                        </ul>
+                    </li>
+                    <li><strong>Prescriptions(id, id_patient, id_doctor, time)</strong>
+                        <ul>
+                            <li>PK: (id)</li>
+                            <li>FK: (id_patient) TO Patients (id)</li>
+                            <li>FK: (id_doctor) TO Doctors (id)</li>
+                        </ul>
+                    </li>
+                </ul>
+            </p>
+
+            <br />
+            <hr/>
+            <br />
+            <h4 id="primary_v1">PRIMARY KEY (v1)</h4>
+
+            <p>
+                <strong id="primary">PRIMARY KEY</strong> constraint will ensure that at any point of time there is a single tuple with a particular id.
+                <blockquote>
+                    <p>These tuples comply with our constraint :</p>
+                    <code>
+                        (1,'Steve','Azzolin',15,1,TRUE,'2018-01-01','2019-01-01') <br/>
+                        &nbsp;(1,'Steve','Azzolin',15,2,TRUE,'2019-01-01','9999-01-01')
+                    </code>
+                    <p>While these tuples don't :</p>
+                    <code>
+                        (1,'Steve','Azzolin',15,1,TRUE,'2018-01-01','2019-01-01') <br/>
+                        &nbsp;(1,'Steve','Azzolin',15,2,TRUE,'2018-12-15','9999-01-01')
+                    </code>
+                </blockquote>
+            </p>
+
+            <pre>
+<span class="sql">CREATE FUNCTION</span> check_p_key_patients_v1() <span class="sql">RETURNS</span> <span class="comment">--we define the code to be executed</span>
+<span class="sql">TRIGGER AS 
+$$BEGIN
+    IF(
+        EXISTS (SELECT</span> *
+                <span class="sql">FROM</span> patients p1
+                <span class="sql">WHERE</span> 1 < (<span class="sql">SELECT COUNT</span>(id) 
+                            <span class="sql">FROM</span> patients p2 
+                            <span class="sql">WHERE</span> p2.id=p1.id <span class="sql">AND</span>
+                                  (p1.start_date, p1.end_date) <span class="sql">OVERLAPS</span> (p2.start_date,p2.end_date) 
+                           )
+                ) 
+    ) <span class="sql">THEN RAISE EXCEPTION</span> 'primary_key_patients_violated'; 
+    <span class="sql">END IF; 
+    RETURN NEW; 
+END$$ 
+LANGUAGE plpgsql
+STABLE; 
+
+CREATE CONSTRAINT TRIGGER</span> trigger_p_key_patients <span class="sql">AFTER</span> <span class="comment">--we ceate the trigger that executes the function</span>
+<span class="sql">INSERT OR UPDATE ON</span> patients
+<span class="sql">DEFERRABLE INITIALLY DEFERRED 
+FOR EACH ROW
+EXECUTE PROCEDURE</span> check_p_key_patients();
+            </pre>
+
+            <blockquote class="warning">
+                <p>
+                    Firsts versions (*_v1) of queries are taken from books and online resources.
+                </p>
+            </blockquote>
+
+            <p>
+                If it finds 2+ tuples that have the same id and their <strong>valid time</strong> are overlapped, then the error <i>'primary_key_patients_violated'</i>
+                is raised.
+            </p>
+
+            <br />
+            <hr/>
+            <br />
+
+            <h4 id="contigous_v1">CONTIGOUS HISTORY (v1)</h4>
+
+            <p>
+                This constraint is essential to ensure that the union of each <strong>valid time interval</strong> forms a contigous history. 
+                In other words that there are no gaps in the <strong>timeline</strong> of each user. 
+                For example :
+                <blockquote>
+                    <p>These tuples comply with our constraint :</p>
+                    <code>
+                        (1,'Steve','Azzolin',15,1,TRUE,'2018-01-01','2019-01-01') <br/>
+                        &nbsp;(1,'Steve','Azzolin',15,2,TRUE,'2019-01-01','9999-01-01')
+                    </code>
+                    <p>While these tuples don't :</p>
+                    <code>
+                        (1,'Steve','Azzolin',15,1,TRUE,'2018-01-01','2019-01-01') <br/>
+                        &nbsp;(1,'Steve','Azzolin',15,2,TRUE,'2019-01-02','9999-01-01')
+                    </code>
+                    <p>because '2019-01-01' is never covered</p>
+                </blockquote>
+
+                <blockquote class="warning">
+                    <p>
+                        The time interval defined by <i>start_date</i> and <i>end_date</i> is represented by open-close notation. So the interval of first tuple of the example
+                        above could be represented by ['2018-01-01','2019-01-01'). The day related to end_date is not included in the interval.
+                    </p>
+                </blockquote>
+
+                <pre>
+<span class="sql">CREATE FUNCTION</span> check_contigous_history_patients_v1() <span class="sql">RETURNS</span> 
+<span class="sql">TRIGGER AS 
+$$BEGIN
+    IF(
+        EXISTS (SELECT * 
+                FROM</span> patients p1 <span class="sql">inner join patients</span> p2 <span class="sql">ON</span> p1.id = p2.id
+                <span class="sql">WHERE</span> p1.end_date < p2.start_date
+                        <span class="sql">AND </span>
+                        <span class="sql">NOT EXISTS (SELECT *
+                                    FROM</span> patients p3
+                                    <span class="sql">WHERE</span> p3.id = p1.id <span class="sql">AND</span>
+                                         ((p3.start_date <= p1.end_date
+                                        <span class="sql">AND</span>
+                                          p3.end_date > p1.end_date) 
+                                        <span class="sql">OR</span>
+                                         (p3.start_date < p2.start_date
+                                        <span class="sql">AND</span>
+                                          p3.end_date >= p2.start_date))
+                                    )
+<span class="comment">--Error if there is two tuples such that between them there is a gap, and there are no tuples that extend to the right the interval of the first tuple (interval of p1) or extends to the left the second interval (of p2)</span>
+                ) 
+    ) <span class="sql">THEN RAISE EXCEPTION</span> 'countigous_history_patients_violated'; 
+    <span class="sql">END IF; 
+    RETURN NEW; 
+END$$ 
+LANGUAGE plpgsql
+STABLE; 
+
+CREATE CONSTRAINT TRIGGER</span> trigger_contigous_history_patients_v1 <span class="sql">AFTER</span> 
+<span class="sql">INSERT OR UPDATE OR DELETE ON</span> patients
+<span class="sql">DEFERRABLE INITIALLY DEFERRED 
+FOR EACH ROW
+EXECUTE PROCEDURE</span> check_contigous_history_patients_v1();
+            </pre>
+
+            </p>
+
+            <br/>
+            <hr />
+            <br />
+            
+            <h4 id="pat_to_doc_v1">PATIENTS TO DOCTORS (v1)</h4>
+            <p>
+                This constraint ensure <strong>referential integrity</strong>. Common <i>FOREIGN KEY</i> can't be used for the reason of <i>PRIMARY KEY</i>.
+            </p>
+            
+            <blockquote>
+                <p>Consider the following tuples in <strong>Doctors</strong> table :</p>
+                <code>
+                    (1,'Luca','Battaglin',15,TRUE,TRUE,'1980-01-01','2019-01-01') <br/>
+                    &nbsp;(1,'Luca','Battaglin',15,FALSE,TRUE,'2019-01-01','9999-01-01')
+                                </code>
+                <p>Luca began to practice as a doctor in 1980 and in 2019 has retired.</p>
+                <p>The following tuple in <strong>Patients</strong> table is correct :</p>
+                <code>
+                    (1,'Steve','Azzolin',15,1,TRUE,'2018-01-01','2018-12-31') <br/>
+                </code>
+                <p>While this tuple in incorrect (patients can't be related to a doctor that isn't on duty):</p>
+                <code>
+                    (1,'Steve','Azzolin',15,1,TRUE,'2018-01-01','2019-05-05') <br/>
+                </code>
+            </blockquote>
+
+                <pre>
+<span class="sql">CREATE FUNCTION</span> check_fk_patients_to_doctors_v1() <span class="sql">RETURNS</span> 
+<span class="sql">TRIGGER AS 
+$$BEGIN
+    IF(
+        EXISTS (SELECT</span> p.id 
+                <span class="sql">FROM</span> patients p
+                <span class="sql">WHERE</span> p.id_doctor <span class="sql">IS NOT NULL AND
+                    (NOT EXISTS (SELECT *
+                                 FROM</span> doctors d
+                                 <span class="sql">WHERE</span> p.id_doctor = d.id <span class="sql">AND</span>
+                                      d.start_date <= p.start_date
+                                      <span class="sql">AND</span>
+                                      p.start_date < d.end_date
+                                  ) <span class="comment">--When P starts exists such doctor</span>
+                <span class="sql">    OR NOT EXISTS (SELECT *
+                                   FROM</span> doctors d
+                                   <span class="sql">WHERE</span> p.id_doctor = d.id <span class="sql">AND</span>
+                                      d.start_date < p.end_date
+                                      <span class="sql">AND</span>
+                                      p.end_date <= d.end_date
+                                  ) <span class="comment">--When P ends exists such doctor</span>
+                    <span class="sql">OR EXISTS     (SELECT *
+                                   FROM</span> doctors d
+                                   <span class="sql">WHERE</span> p.id_doctor = d.id 
+                                      <span class="sql">AND</span> d.on_duty = FALSE <span class="sql">AND</span>
+                                      d.start_date < p.end_date
+                                      <span class="sql">AND</span> 
+                                      d.end_date > p.start_date
+                                  )) <span class="comment">--The doctor is always on-duty during patient's period</span>
+                 )  
+<span class="comment" >--Consider the statement like different blocks. If it founds 1+ tuples that satify one of the nested statement we found an error</span>
+    ) <span class="sql">THEN RAISE EXCEPTION</span> 'fk_patients_to_doctor_violated'; 
+    <span class="sql">END IF; 
+    RETURN NEW; 
+END$$ 
+LANGUAGE plpgsql
+STABLE; 
+
+CREATE CONSTRAINT TRIGGER</span> trigger_fk_patients_to_doctors_v1 <span class="sql">AFTER</span> 
+<span class="sql">INSERT OR UPDATE ON</span> patients
+<span class="sql">DEFERRABLE INITIALLY DEFERRED 
+FOR EACH ROW
+EXECUTE PROCEDURE</span> check_fk_patients_to_doctors_v1();
+<span class="sql">
+CREATE CONSTRAINT TRIGGER</span> trigger_fk_doctors_to_patients_v1 <span class="sql">AFTER</span> 
+<span class="sql">UPDATE OR DELETE ON</span> doctors
+<span class="sql">DEFERRABLE INITIALLY DEFERRED 
+FOR EACH ROW
+EXECUTE PROCEDURE</span> check_fk_patients_to_doctors_v1();
+            </pre>
+
+
+            <br/>
+            <hr/>
+            <br/>
+
+            <h4 id="photo_to_pat_v1">PHOTOS TO PATIENTS (v1)</h4>
+
+            <p>
+                <strong>Photos</strong> is not temporalized. For this reason teorically we could use a simple <i>FOREIGN KEY</i> statement. Problems occur with PG Implementation
+                of that constraint. In requires that the referenced table (Patients) has the <strong>PRIMARY KEY</strong> defined. 
+                For reasons previosly explained we can't define <strong>PRIMARY KEY</strong> on Patients (we defined a <i>self-made</i> PK constraint).
+            </p>
+
+            <p>
+                So we simply define :
+            </p>
+
+                <pre>
+<span class="sql">CREATE FUNCTION</span> check_fk_photos_to_patients_v1() <span class="sql">RETURNS</span> 
+<span class="sql">TRIGGER AS 
+$$BEGIN
+    IF(
+        EXISTS  ( 
+                  SELECT</span> p.id     
+                  <span class="sql">FROM</span> patients p <span class="sql">right join</span> photos f <span class="sql">ON</span> p.id = f.id_patient
+                  <span class="sql">WHERE</span> p.id <span class="sql">IS NULL</span>
+                )  
+<span class="comment" >--simply check that every photo is linked to a patient</span>
+    ) <span class="sql">THEN RAISE EXCEPTION</span> 'fk_photos_to_patients_violated'; 
+    <span class="sql">END IF; 
+    RETURN NEW; 
+END$$ 
+LANGUAGE plpgsql
+STABLE; 
+
+CREATE CONSTRAINT TRIGGER</span> trigger_fk_photos_to_patients_v1 <span class="sql">AFTER</span> 
+<span class="sql">INSERT OR UPDATE ON</span> photos
+<span class="sql">DEFERRABLE INITIALLY DEFERRED 
+FOR EACH ROW
+EXECUTE PROCEDURE</span> check_fk_photos_to_patients_v1();
+<span class="sql">
+CREATE CONSTRAINT TRIGGER</span> trigger_fk_patients_to_photos_v1 <span class="sql">AFTER</span> 
+<span class="sql">DELETE ON</span> patients
+<span class="sql">DEFERRABLE INITIALLY DEFERRED 
+FOR EACH ROW
+EXECUTE PROCEDURE</span> check_fk_photos_to_patients_v1();
+            </pre>
+
+            <blockquote class="warning">
+                <strong>FOREIGN KEY</strong> from <i>Patient</i> (or <i>Doctors</i>) to <i>Districts</i> is a common <strong>build-in FOREIGN KEY</strong> because Districts
+                has a <strong>PRIMARY KEY</strong>
+            </blockquote>
+
+
+            <br />
+            <hr />
+            <br />
+            
+            <h4 id="prescr_to_pat_doc_v1">PRESCRIPTIONS TO PATIENTS AND DOCTORS</h4>
+
+            <p>
+                <strong>Prescriptions</strong> is linked with <strong>Patients</strong> and <strong>Doctors</strong> with N-1 relationships. We want to ensure 
+                <strong>referential integrity</strong> taking care of the temporal semantic of <strong>valid time period</strong>.
+            </p>
+
+            <ul>
+                <li>
+                    <strong>PRESCRIPTIONS TO PATIENTS (v1)</strong> <br/>
+                <pre>
+<span class="sql">CREATE FUNCTION</span> check_fk_prescriptions_to_patients_v1() <span class="sql">RETURNS</span> 
+<span class="sql">TRIGGER AS 
+$$BEGIN
+    IF(
+        EXISTS (</span>  <span class="comment">--If the patient doesn't exists or the patient has a NULL value for id_doctor</span>
+                <span class="sql">SELECT</span> p.id
+                <span class="sql">FROM</span> patients p <span class="sql">right join</span> prescriptions q <span class="sql">ON</span> p.id = q.id_patient
+                <span class="sql">WHERE</span> p.id <span class="sql">IS NULL OR</span> p.id_doctor <span class="sql">IS NULL
+               ) 
+        OR 
+        (
+            EXISTS (
+               SELECT</span> p.id 
+               <span class="sql">FROM</span> patients p <span class="sql">right join</span> prescriptions q <span class="sql">ON</span> p.id = q.id_patient
+               <span class="sql">WHERE</span> q.id_doctor <span class="sql">NOT IN
+                     (
+                      SELECT</span> id_doctor
+                      <span class="sql">FROM</span> patients p2
+                      <span class="sql">WHERE</span> p2.id = p.id --aggiunto Steve TODO
+                            <span class="sql">AND</span>
+                            q.time >= start_date
+                            <span class="sql">AND</span>
+                            q.time < end_date
+                            <span class="sql">AND</span> id_doctor <span class="sql">IS NOT NULL </span>
+                     )
+            )
+<span class="comment">--Nested query required to detect prescriptions done by a doctor that wasn't the doctor of the indicated patient at <strong>time</strong></span>
+        )
+    ) <span class="sql">THEN RAISE EXCEPTION</span> 'fk_prescription_to_patients_violated'; 
+    <span class="sql">END IF; 
+    RETURN NEW; 
+END$$ 
+LANGUAGE plpgsql
+STABLE; 
+
+CREATE CONSTRAINT TRIGGER</span> trigger_fk_photos_to_patients_v1 <span class="sql">AFTER</span> 
+<span class="sql">INSERT OR UPDATE ON</span> photos
+<span class="sql">DEFERRABLE INITIALLY DEFERRED 
+FOR EACH ROW
+EXECUTE PROCEDURE</span> check_fk_prescriptions_to_patients_v1();
+<span class="sql">
+CREATE CONSTRAINT TRIGGER</span> trigger_fk_patients_to_photos_v1 <span class="sql">AFTER</span> 
+<span class="sql">DELETE ON</span> patients
+<span class="sql">DEFERRABLE INITIALLY DEFERRED 
+FOR EACH ROW
+EXECUTE PROCEDURE</span> check_fk_photos_to_patients_v1();
+            </pre>
+                </li>
+
+
+                <li>
+                    <strong>PRESCRIPTIONS TO DOCTORS (v1)</strong> <br/>
+
+
+                <pre>
+<span class="sql">CREATE FUNCTION</span> check_fk_prescriptions_to_doctors_v1() <span class="sql">RETURNS</span> 
+<span class="sql">TRIGGER AS 
+$$BEGIN
+    IF(
+        EXISTS (</span>
+                <span class="sql">SELECT</span> p.id   <span class="comment">--Check if doctors really exists</span>
+                <span class="sql">FROM</span> doctors p <span class="sql">right join</span> prescriptions q <span class="sql">ON</span> p.id = q.id_doctor
+                <span class="sql">WHERE</span> p.id <span class="sql">IS NULL
+               ) 
+        OR 
+        (
+            EXISTS (
+               SELECT</span> p.id 
+               <span class="sql">FROM</span> doctors p <span class="sql">right join</span> prescriptions q <span class="sql">ON</span> p.id = q.id_doctor
+               <span class="sql">WHERE</span> q.time >= p.start_date
+                    <span class="sql">AND</span>
+                     q.time < p.end_date
+                    <span class="sql">AND </span>
+                     p.on_duty = FALSE
+            )
+<span class="comment">--Check if the doctor that created a prescription is on duty</span>
+        )
+    ) <span class="sql">THEN RAISE EXCEPTION</span> 'fk_prescription_to_doctors_violated'; 
+    <span class="sql">END IF; 
+    RETURN NEW; 
+END$$ 
+LANGUAGE plpgsql
+STABLE; 
+
+CREATE CONSTRAINT TRIGGER</span> trigger_fk_prescriptions_to_doctorsv1 <span class="sql">AFTER</span> 
+<span class="sql">INSERT OR UPDATE ON</span> photos
+<span class="sql">DEFERRABLE INITIALLY DEFERRED 
+FOR EACH ROW
+EXECUTE PROCEDURE</span> check_fk_prescriptions_to_doctors_v1();
+<span class="sql">
+CREATE CONSTRAINT TRIGGER</span> trigger_fk_doctors_to_patients_v1 <span class="sql">AFTER</span> 
+<span class="sql">UPDATE OR DELETE ON</span> doctors
+<span class="sql">DEFERRABLE INITIALLY DEFERRED 
+FOR EACH ROW
+EXECUTE PROCEDURE</span> check_fk_prescriptions_to_doctors_v1();
+            </pre>
+                </li>
+            </ul>
+
+
+            <hr />
+            <hr />
+            <h3>
+                <a name="header-n8" class="md-header-anchor"></a>Queries on valid state time tables
+            </h3>
+
+            <p>
+                Let's see examples of how to query a <strong>valid state time</strong> table taking care of the temporal semantic of tuples.
+            </p>
+
+            <ul>
+                <li>
+                    <strong>INSERT:</strong>
+                    <blockquote>
+                        <p>A doctor that stated working in 1998 and is still on duty:</p>
+                        <code>
+                            insert INTO doctors VALUES (1,'Matteo','Facchin',15,TRUE,TRUE,'1998-06-23','9999-01-01');
+                        </code>
+
+                        <p>A patient referred to Dr.Facchin:</p>
+                        <code>
+                            INSERT INTO patients VALUES (1,'Enrico','DeNicola',15,1,TRUE,'2000-01-01','9999-01-01');
+                        </code>
+
+                        <p>Another patient referred to Dr.Facchin. But this should be stopped (see <i>start_date</i>)</p>
+                        <code>
+                            INSERT INTO patients VALUES (1,'Enrico','DeNicola',15,1,TRUE,'1997-01-01','9999-01-01');
+                        </code>
+                    </blockquote>
+                </li>
+                <li>
+                    <strong>UPDATE:</strong>
+                    <blockquote>
+                        <p>Enrico receives a warning from the system to change doctor, Dr.Facchin will soonly stop working...</p>
+                        <code>
+                            START TRANSACTION; <BR/> <BR/>
+                            INSERT INTO patients VALUES <br/>(SELECT id,name,surname,id_district,2,enabled,NOW(),'9999-01-01' <br/>FROM patients <br/>WHERE id = 1 AND end_date = '9999-01-01'); <br/> <br/>
+                            UPDATE patients SET end_date = NOW() WHERE id = 1 AND start_date < NOW() AND end_date='9999-01-01'; <BR/> <BR/>
+                            COMMIT;
+                        </code>
+                        <p>Dr.Facchin retired:</p>
+                        <code>
+                            START TRANSACTION; <BR /> <BR/>
+                            INSERT INTO doctors VALUES <br/>(SELECT id, name, surname, id_district,FALSE,FALSE, NOW(), '9999-01-01' <br/>FROM doctors<br/> WHERE id = 1 AND end_date = '9999-01-01' ); <br/> <br/>
+                            UPDATE doctors SET end_date = NOW() WHERE id = 1 AND start_date < NOW() AND end_date = '9999-01-01'; <br/><BR />
+                            COMMIT;
+                        </code>
+                    </blockquote>
+
+                    <blockquote class="warning">
+                        <p>Here is clear why we must use <strong>DEFERRABLE CONSTRAINT.</strong></p>
+                        <p>
+                            After the first <i>INSERT</i> we have 2 tuples with the same id that ends with '9999-01-01'. But It is only a temporany situation, 
+                            in fact the following <i>UPDATE</i> resolves the overlap.
+                        </p>
+                        <p>
+                            The constraint is fired only at the end of the entire transaction.
+                        </p>
+                    </blockquote>
+                </li>
+                <li>
+                    <strong>DELETE</strong>
+                    <p>
+                        <strong>Deletions</strong> should be avoided to mantain the complete perspective of patients and doctors (to reconstruct past changes).
+                    </p>
+                </li>
+                <li>
+                    <strong>CURRENT VALID ROW</strong>
+
+                    <blockquote>
+                        <p>
+                            If we want to retrive infos about the current state of a patient simply: <br/>
+                            <code>
+                                SELECT * FROM patients WHERE id = 1 AND start_date <= NOW() AND end_date > NOW();
+                            </code>
+                        </p>
+                    </blockquote>
+
+                    <blockquote class="warning">
+                        <p>
+                            If we know that no future data are stored in the table (It isn't possible to store that the next year I will change doctor, 
+                            only that today I changed it) we could simply write: <br/>
+                            <code>
+                                SELECT * FROM patients WHERE id = 1 AND end_date = '9999-01-01';
+                            </code>
+                        </p>
+                    </blockquote>
+                </li>
+
+                <li>
+                    <strong>RECONTRUCT THE HISTORY</strong>
+                    <blockquote>
+                        <p>
+                            Do you want a summary about doctors changed during years ? Simply :
+                        </p>
+                        <code>
+                            SELECT * FROM patients WHERE id = 1;
+                        </code>
+                        <p>
+                            Do you want a summary about working periods of doctors ? Simply :
+                        </p>
+                        <code>
+                            SELECT * FROM doctors WHERE id = 1;
+                        </code>
+                    </blockquote>
+                    <blockquote class="warning">
+                        <p>
+                            The police contacted us to help them in an investigation involving Dr. Facchin. They need to know wich patients were related to him and in which period.
+                            So we run this query :
+                        </p>
+                        <code>
+                            SELECT * <br/>
+                            FROM patients <br />
+                            WHERE id_doctor = 1 <br />
+                            ORDER BY id, start_date; <br />
+                        </code>
+                    </blockquote>
+                </li>
+            </ul>
+
+
+
+            <hr />
+            <hr />
+            <h3>
+                <a name="header-n8" class="md-header-anchor"></a>Performance (v1)
+            </h3>
+
+            <p>
+                Let's have an overview about performance of <strong>constraints</strong> <a href="#header-constraints">defined above.</a>
+            </p>
+
+            <p>
+                Some infos:
+                <ul>
+                    <li>CPU AMD 64bit 2c 2.9GHZ</li>
+                    <li>RAM 8GB DDR4</li>
+                    <li>HDD 1TB</li>
+                    <li>
+                        Dataset (n° rows):
+                        <ul>
+                            <li>Districts: 110</li>
+                            <li>Doctors: 700 000</li>
+                            <li>Patients: 630 000</li>
+                            <li>Photos: 70 000</li>
+                            <li>Prescriptions: 70 000</li>
+                        </ul>
+                    </li>
+                </ul>
+            </p>
+
+            <blockquote>
+                <p>
+                    Before executing queries we need to define some indexes for an efficent lookup of rows :
+                </p>
+                <code>
+                    CREATE INDEX ON patients (id,start_date,end_date);
+                </code>
+                <code>
+                    CREATE INDEX ON doctors (id,start_date,end_date);
+                </code>
+            </blockquote>
+
+
+            <blockquote class="warning">
+                <p>
+                    The aim of timing estimation that will follow is simply to distinguish between efficent and inefficent queries.<br/>
+                    The effective time depends on many factors (disk usage,running process,cache/buffer...).
+                </p>
+            </blockquote>
+
+            
+            <hr/>
+            <h4> <a href="#primary_v1" class="strong">PRIMARY KEY</a> </h4>
+            <img src="./diagrams/pk_v1/pk_v1.jpeg" />
+
+            <hr />
+            <h4> <a href="#contigous_v1" class="strong">CONTIGOUS HISTORY</a> </h4>
+            <p>
+                Database server rebooted after 20 seconds of infinite waiting.
+            </p>
+
+            <hr />
+            <h4> <a href="#pat_to_doc_v1" class="strong">PATIENTS TO DOCTORS</a> </h4>
+            <img src="diagrams/pat_to_doc/pat_to_doc_v1.jpeg" />
+            <p>The <i>INSERT</i> statement required a reboot after a long waiting. </p>
+
+
+            <hr />
+            <h4> <a href="#photo_to_pat_v1" class="strong">PHOTOS TO PATIENTS</a> </h4>
+            <img src="diagrams/photo_to_pat/photo_to_pat_v1.jpeg" />
+
+            <hr />
+            <h4> <a href="#prescr_to_pat_doc_v1" class="strong">PRESCRIPTIONS TO PATIENTS</a> </h4>
+            <img src="diagrams/presc_to_pat/presc_to_pat_v1.jpeg" />
+
+            <hr />
+            <h4> <a href="#prescr_to_pat_doc_v1" class="strong">PRESCRIPTIONS TO DOCTORS</a> </h4>
+            <p>
+                Similar to <strong>PRESCRIPTIONS TO PATIENTS</strong>.
+            </p>
+
+
+            <hr />
+            <hr />
+            <h3>
+                <a name="header-n8" class="md-header-anchor"></a>Tuning 
+            </h3>
+            
+
+            <p>
+                The previous section shows absolutely unacceptable queries execution times. We need to decrease the total time of queries if we want to build an usable application.
+            </p>
+
+            <p>
+                So let's try to tune out tables adding a special kind of indexs, <strong>GiST indexes.</strong>
+            </p>
+
+            <p>
+                <strong>Gist indexes</strong> can be used to represent geometrical shapes, number or timestamps intervals, full text searches and so on, in a very efficent way.
+            </p>
+
+            <p>
+                We can do another important observation on our queries. Let's take again the code for <strong>CONTIGOUS HYSTORY</strong> constraint :
+            </p>
+
+            <pre>
+<span class="sql">CREATE FUNCTION</span> check_contigous_history_patients_v1() <span class="sql">RETURNS</span> 
+<span class="sql">TRIGGER AS 
+$$BEGIN
+    IF(
+        EXISTS (SELECT * 
+                FROM</span> patients p1 <span class="sql">inner join patients</span> p2 <span class="sql">ON</span> p1.id = p2.id
+                <span class="sql">WHERE</span> p1.end_date < p2.start_date
+                        <span class="sql">AND </span>
+                        <span class="sql">NOT EXISTS (SELECT *
+                                    FROM</span> patients p3
+                                    <span class="sql">WHERE</span> p3.id = p1.id <span class="sql">AND</span>
+                                         ((p3.start_date <= p1.end_date
+                                        <span class="sql">AND</span>
+                                          p3.end_date > p1.end_date) 
+                                        <span class="sql">OR</span>
+                                         (p3.start_date < p2.start_date
+                                        <span class="sql">AND</span>
+                                          p3.end_date >= p2.start_date))
+                                    )
+                ) 
+    ) <span class="sql">THEN RAISE EXCEPTION</span> 'countigous_history_patients_violated'; 
+    <span class="sql">END IF; 
+    RETURN NEW; 
+END$$ 
+LANGUAGE plpgsql
+STABLE; 
+
+CREATE CONSTRAINT TRIGGER</span> trigger_contigous_history_patients_v1 <span class="sql">AFTER</span> 
+<span class="sql">INSERT OR UPDATE OR DELETE ON</span> patients
+<span class="sql">DEFERRABLE INITIALLY DEFERRED 
+FOR EACH ROW
+EXECUTE PROCEDURE</span> check_contigous_history_patients_v1();
+            </pre>
+
+
+            <p>
+                We marked the <i>trigger</i> <strong>FOR EACH ROW</strong>. It means that the trigger will be fired for each row that is either 
+                <i>UPDATED,INSERTED</i> or <i>DELETED</i>. 
+            </p>
+
+            <blockquote>
+                <p>
+                    Is this necessary ? <i>Well, nope...</i>
+                </p>
+            </blockquote>
+
+            <p>
+                This query checks the entire table for not contiguous rows. If we insert 3 rows it repeats the same check 3 times, while It would be enough to check the 
+                entire table just once. So we could mark the <i>trigger</i> <strong>FOR EACH STATEMENT</strong>.
+            </p>
+
+            <blockquote>
+                <p>
+                    Does It decrease timing ? <i>Well, nope...</i> (I ran tests using statements that affected single rows)
+                </p>
+            </blockquote>
+
+            <p>
+                An update to the <i>trigger</i> (or better, the function called by the <i>trigger</i>) that leads to a significant improvement in performance is the following :
+            </p>
+
+
+                        <pre>
+<span class="sql">CREATE FUNCTION</span> check_contigous_history_patients_v2() <span class="sql">RETURNS</span> 
+<span class="sql">TRIGGER AS 
+$$DECLARE</span>
+    <strong>to_check</strong> <span class="sql">int := NULL;
+$$BEGIN
+    IF TG_OP =</span> <span class="orange">'DELETE'</span> <span class="sql">THEN</span>
+        <strong>to_check</strong> = OLD.id; <span class="comment">--For DELETE the object NEW isn't evaluated</span>
+    <span class="sql">ELSE</span>
+        <strong>to_check</strong> = NEW.id; <span class="comment">--For others ops I am interested in the new value</span>
+    <span class="sql">END IF;
+
+    IF(
+        EXISTS (SELECT * 
+                FROM</span> patients p1 <span class="sql">inner join patients</span> p2 <span class="sql">ON</span> p1.id = p2.id
+                <span class="sql">WHERE</span> p1.id = <strong>to_check</strong> <span class="sql">AND</span> p1.end_date < p2.start_date
+                        <span class="sql">AND </span>
+                        <span class="sql">NOT EXISTS (SELECT *
+                                    FROM</span> patients p3
+                                    <span class="sql">WHERE</span> p3.id = p1.id <span class="sql">AND</span>
+                                         ((p3.start_date <= p1.end_date
+                                        <span class="sql">AND</span>
+                                          p3.end_date > p1.end_date) 
+                                        <span class="sql">OR</span>
+                                         (p3.start_date < p2.start_date
+                                        <span class="sql">AND</span>
+                                          p3.end_date >= p2.start_date))
+                                    )
+                ) 
+    ) <span class="sql">THEN RAISE EXCEPTION</span> 'countigous_history_patients_violated'; 
+    <span class="sql">END IF; 
+    RETURN NEW; 
+END$$ 
+LANGUAGE plpgsql
+STABLE; 
+
+CREATE CONSTRAINT TRIGGER</span> trigger_contigous_history_patients_v2 <span class="sql">AFTER</span> 
+<span class="sql">INSERT OR UPDATE OR DELETE ON</span> patients
+<span class="sql">DEFERRABLE INITIALLY DEFERRED 
+FOR EACH ROW
+EXECUTE PROCEDURE</span> check_contigous_history_patients_v2();
+            </pre>
+
+            <blockquote>
+                <p>
+                    We limited rows to check, so the query doesn't involve the entire table. <br/>
+                    Thank's to the index defined over (id,start_date,end_date) the lookup for rows for which <I>p1.id = to_check</I> is very efficent.
+                </p>
+            </blockquote>
+
+            <p>
+                Actually we could write this constraint with a different approach :
+            </p>
+
+        <pre>
+<span class="sql">CREATE FUNCTION</span> check_contigous_history_patients_v3() <span class="sql">RETURNS</span> 
+<span class="sql">TRIGGER AS 
+$$BEGIN
+    IF ( 
+        EXISTS(
+                SELECT</span> id
+                <span class="sql">FROM</span> patients d
+                <span class="sql">WHERE</span> d.id = NEW.id <span class="sql">AND</span> d.end_date <> '9999-01-01'
+                    <span class="sql">AND NOT EXISTS</span> (
+                                    <span class="sql">SELECT</span> d2.id 
+                                    <span class="sql">FROM</span> patients d2 
+                                    <span class="sql">WHERE</span> d2.id = d.id 
+                                            <span class="sql">AND</span> d2.start_date = d.end_date
+                                      )
+        )  
+<span class="comment">--Raise exception if there is a row that doesn't end with 9999-01-01 and there isn't a row that starts when this ends.</span>
+<span class="comment">--Nested SELECT is potentially an INDEX ONLY access (very efficent).</span>
+    ) <span class="sql">THEN RAISE EXCEPTION</span> 'countigous_history_patients_violated'; 
+    <span class="sql">END IF; 
+    RETURN NEW; 
+END$$ 
+LANGUAGE plpgsql
+STABLE; </span>
+
+<span class="comment">--Trigger as before</span>
+    </pre>
+
+            <br/>
+
+            <blockquote>
+                <p>
+                    Queries are then rewritten with  <a href="https://www.postgresql.org/docs/9.4/functions-range.html" target="_blank">range operators.</a>
+                </p>
+            </blockquote>
+
+            <br />
+            <p>
+                Once statements are rewritten with the previous new approach (and <strong>GiST index</strong>), we can observe these times.
+            </p>
+            <br />
+
+            <hr />
+            <h4> <a href="#primary_v2" class="strong">PRIMARY KEY v2</a> </h4>
+            <img src="./diagrams/pk_v1/pk_v2.jpeg" />
+            
+            <hr />
+            <h4> <a href="#contigous_v2" class="strong">CONTIGOUS HISTORY v2</a> </h4>
+            <img src="diagrams/contigous/contigous_v2.jpeg" />
+            
+            <hr />
+            <h4> <a href="#pat_to_doc_v2" class="strong">PATIENTS TO DOCTORS v2</a> </h4>
+            <img src="diagrams/pat_to_doc/pat_to_doc_v2.jpeg" />
+            
+            
+            <hr />
+            <h4> <a href="#photo_to_pat_v2" class="strong">PHOTOS TO PATIENTS v2</a> </h4>
+            <img src="diagrams/photo_to_pat/photo_to_pat_v2.jpeg" />
+            
+            <hr />
+            <h4> <a href="#prescr_to_pat_doc_v2" class="strong">PRESCRIPTIONS TO PATIENTS v2</a> </h4>
+            <img src="diagrams/presc_to_pat/presc_to_pat_v2.jpeg" />
+            
+            <hr />
+            <h4> <a href="#prescr_to_pat_doc_v2" class="strong">PRESCRIPTIONS TO DOCTORS v2</a> </h4>
+            <p>
+                Similar to <strong>PRESCRIPTIONS TO PATIENTS v2</strong>.
+            </p>
+            
+            <hr/>
+            <hr />
+            <h3>
+                <a name="header-n8" class="md-header-anchor "></a>Transaction time tables
+            </h3>
+
+            <blockquote class="warning">
+                <p>
+                    Not implemented yet...
+                </p>
+            </blockquote>
+
+            <hr />
+            <hr />
+            <h3>
+                <a name="header-n8" class="md-header-anchor "></a>Bitemporal tables
+            </h3>
+
+            <blockquote class="warning">
+                <p>
+                    Not implemented yet...
+                </p>
+            </blockquote>
+            
+        </div>
+    </body>
+</html>
