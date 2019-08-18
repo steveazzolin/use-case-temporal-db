@@ -19,20 +19,20 @@
 
             <h4>11/08/2019</h4>
 
-            <h3>
+            <h3 id="intro">
                 <a name="header-n8" class="md-header-anchor "></a>Introduction
             </h3>
 
             <p>
-                The goal of this proof of concepts is a brief introduction on main concepts of temporal databases. Out use case is a simplified version of <strong>SanityManager</strong>
-                Web Application that I developed, with my teammates, for the course <strong>Introduction to Web Programming</strong> (@ Unitn 2019).
+                The goal of this proof of concepts is a brief introduction on main concepts of temporal databases. This use case is a simplified version of <strong>SanityManager</strong>
+                Web Application that my teammates and I developed for the course <strong>Introduction to Web Programming</strong> (@ Unitn 2019).
             </p>
             <p>
                After a simple introduction on these topic will follow a focus on performance, where I show how to interpret correctly the semantic of our application to reduce
-               overhead introduced by strict constraints.
+               the overhead introduced by strict constraints.
             </p>
             <p>
-                <strong>Temporal databases</strong> aren't a special kind of black magic, but a tecnique to project and implements tables and queries to give more importance to the temporal 
+                <strong>Temporal databases</strong> aren't a special kind of black magic, but a tecnique to design and implement tables and queries to give more importance to the temporal 
                 semantics of the application. There are 3 main kinds of temporal tables :
                 <ul>
                     <li>Valid state time</li>
@@ -47,7 +47,7 @@
                 <a name="header-n8" class="md-header-anchor"></a>Use case
             </h3>
             <p>
-                Let's analyze for a moment the basic tables that we will use in nexts chapters. We have these 5 tables :
+                Let's introduce tables that we will use in nexts chapters. We have 5 tables :
                 <ul>
                     <li> <strong>District(id, name)</strong>
                         <ul>
@@ -104,7 +104,7 @@
             </p>
             <hr>
 
-            <h3>
+            <h3 id="vt">
                 <a name="header-n8" class="md-header-anchor"></a>Valid state time tables
             </h3>
             <p>
@@ -116,8 +116,8 @@
                 We add 2 DATE columns to the basic definitions of tables above, so we can decribe the period of time where the tuple was/is valid. If the <strong>valid time</strong>
                 overlaps the current date, the tuple is valid at current time. <br/> <br/>
                 <code>
-                    ALTER TABLE Patients ADD COLUMN start_date DATE not null,end_date DATE not null;<br/>
-                    &nbsp;ALTER TABLE Doctors ADD COLUMN start_date DATE not null,end_date DATE not null;
+                    ALTER TABLE Patients ADD COLUMN start_date DATE not null,ADD COLUMN end_date DATE not null;<br/>
+                    &nbsp;ALTER TABLE Doctors ADD COLUMN start_date DATE not null,ADD COLUMN end_date DATE not null;
                 </code>
             </p>
             <p>
@@ -149,7 +149,7 @@
             </blockquote>
 
             <hr/>
-            <h3>
+            <h3 id="implementation">
                 <a name="header-n8" class="md-header-anchor"></a>Implementation details
             </h3>
             <p>
@@ -170,7 +170,7 @@
 
 
             <hr />
-            <h3>
+            <h3 id="implementing">
                 <a name="header-constraints" class="md-header-anchor"></a>Implementing valid state time tables
             </h3>
             <p>
@@ -344,7 +344,7 @@ EXECUTE PROCEDURE</span> check_contigous_history_patients_v1();
             
             <h4 id="pat_to_doc_v1">PATIENTS TO DOCTORS (v1)</h4>
             <p>
-                This constraint ensure <strong>referential integrity</strong>. Common <i>FOREIGN KEY</i> can't be used for the reason of <i>PRIMARY KEY</i>.
+                This constraint ensures <strong>referential integrity</strong>. Common <i>FOREIGN KEY</i> can't be used for the reason of <i>PRIMARY KEY</i>.
             </p>
             
             <blockquote>
@@ -520,17 +520,17 @@ END$$
 LANGUAGE plpgsql
 STABLE; 
 
-CREATE CONSTRAINT TRIGGER</span> trigger_fk_photos_to_patients_v1 <span class="sql">AFTER</span> 
-<span class="sql">INSERT OR UPDATE ON</span> photos
+CREATE CONSTRAINT TRIGGER</span> trigger_fk_prescriptions_to_patients_v1 <span class="sql">AFTER</span> 
+<span class="sql">INSERT OR UPDATE ON</span> prescriptions
 <span class="sql">DEFERRABLE INITIALLY DEFERRED 
 FOR EACH ROW
 EXECUTE PROCEDURE</span> check_fk_prescriptions_to_patients_v1();
 <span class="sql">
-CREATE CONSTRAINT TRIGGER</span> trigger_fk_patients_to_photos_v1 <span class="sql">AFTER</span> 
+CREATE CONSTRAINT TRIGGER</span> trigger_fk_patients_to_prescriptions_v1 <span class="sql">AFTER</span> 
 <span class="sql">DELETE ON</span> patients
 <span class="sql">DEFERRABLE INITIALLY DEFERRED 
 FOR EACH ROW
-EXECUTE PROCEDURE</span> check_fk_photos_to_patients_v1();
+EXECUTE PROCEDURE</span> check_fk_prescriptions_to_patients_v1();
             </pre>
                 </li>
 
@@ -569,13 +569,13 @@ END$$
 LANGUAGE plpgsql
 STABLE; 
 
-CREATE CONSTRAINT TRIGGER</span> trigger_fk_prescriptions_to_doctorsv1 <span class="sql">AFTER</span> 
-<span class="sql">INSERT OR UPDATE ON</span> photos
+CREATE CONSTRAINT TRIGGER</span> trigger_fk_prescriptions_to_doctors_v1 <span class="sql">AFTER</span> 
+<span class="sql">INSERT OR UPDATE ON</span> prescriptions
 <span class="sql">DEFERRABLE INITIALLY DEFERRED 
 FOR EACH ROW
 EXECUTE PROCEDURE</span> check_fk_prescriptions_to_doctors_v1();
 <span class="sql">
-CREATE CONSTRAINT TRIGGER</span> trigger_fk_doctors_to_patients_v1 <span class="sql">AFTER</span> 
+CREATE CONSTRAINT TRIGGER</span> trigger_fk_doctors_to_prescriptions_v1 <span class="sql">AFTER</span> 
 <span class="sql">UPDATE OR DELETE ON</span> doctors
 <span class="sql">DEFERRABLE INITIALLY DEFERRED 
 FOR EACH ROW
@@ -587,7 +587,7 @@ EXECUTE PROCEDURE</span> check_fk_prescriptions_to_doctors_v1();
 
             <hr />
             <hr />
-            <h3>
+            <h3 id="queries">
                 <a name="header-n8" class="md-header-anchor"></a>Queries on valid state time tables
             </h3>
 
@@ -601,7 +601,7 @@ EXECUTE PROCEDURE</span> check_fk_prescriptions_to_doctors_v1();
                     <blockquote>
                         <p>A doctor that stated working in 1998 and is still on duty:</p>
                         <code>
-                            insert INTO doctors VALUES (1,'Matteo','Facchin',15,TRUE,TRUE,'1998-06-23','9999-01-01');
+                            INSERT INTO doctors VALUES (1,'Matteo','Facchin',15,TRUE,TRUE,'1998-06-23','9999-01-01');
                         </code>
 
                         <p>A patient referred to Dr.Facchin:</p>
@@ -614,6 +614,12 @@ EXECUTE PROCEDURE</span> check_fk_prescriptions_to_doctors_v1();
                             INSERT INTO patients VALUES (1,'Enrico','DeNicola',15,1,TRUE,'1997-01-01','9999-01-01');
                         </code>
                     </blockquote>
+
+                    <blockquote class="warning">
+                        <p>
+                            To make the trigger correctly fired at the end of the statement we must surround our queries with <strong>START TRANSACTION</strong> and <strong>COMMIT</strong>.
+                        </p>
+                    </blockquote>
                 </li>
                 <li>
                     <strong>UPDATE:</strong>
@@ -621,15 +627,15 @@ EXECUTE PROCEDURE</span> check_fk_prescriptions_to_doctors_v1();
                         <p>Enrico receives a warning from the system to change doctor, Dr.Facchin will soonly stop working...</p>
                         <code>
                             START TRANSACTION; <BR/> <BR/>
-                            INSERT INTO patients VALUES <br/>(SELECT id,name,surname,id_district,2,enabled,NOW(),'9999-01-01' <br/>FROM patients <br/>WHERE id = 1 AND end_date = '9999-01-01'); <br/> <br/>
-                            UPDATE patients SET end_date = NOW() WHERE id = 1 AND start_date < NOW() AND end_date='9999-01-01'; <BR/> <BR/>
+                            INSERT INTO patients <br/>(SELECT id,name,surname,id_district,ID_NEW_DOCTOR,enabled,NOW(),'9999-01-01' <br/>FROM patients <br/>WHERE id = 1 AND end_date = '9999-01-01'); <br/> <br/>
+                            UPDATE patients SET end_date = NOW() WHERE id = 1 AND start_date < NOW()::DATE AND end_date='9999-01-01'; <BR/> <BR/>
                             COMMIT;
                         </code>
                         <p>Dr.Facchin retired:</p>
                         <code>
                             START TRANSACTION; <BR /> <BR/>
-                            INSERT INTO doctors VALUES <br/>(SELECT id, name, surname, id_district,FALSE,FALSE, NOW(), '9999-01-01' <br/>FROM doctors<br/> WHERE id = 1 AND end_date = '9999-01-01' ); <br/> <br/>
-                            UPDATE doctors SET end_date = NOW() WHERE id = 1 AND start_date < NOW() AND end_date = '9999-01-01'; <br/><BR />
+                            INSERT INTO doctors <br/>(SELECT id, name, surname, id_district,FALSE,FALSE, NOW(), '9999-01-01' <br/>FROM doctors<br/> WHERE id = 1 AND end_date = '9999-01-01' ); <br/> <br/>
+                            UPDATE doctors SET end_date = NOW() WHERE id = 1 AND start_date < NOW()::DATE AND end_date = '9999-01-01'; <br/><BR />
                             COMMIT;
                         </code>
                     </blockquote>
@@ -879,7 +885,7 @@ EXECUTE PROCEDURE</span> check_contigous_history_patients_v1();
 <span class="sql">TRIGGER AS 
 $$DECLARE</span>
     <strong>to_check</strong> <span class="sql">int := NULL;
-$$BEGIN
+BEGIN
     IF TG_OP =</span> <span class="orange">'DELETE'</span> <span class="sql">THEN</span>
         <strong>to_check</strong> = OLD.id; <span class="comment">--For DELETE the object NEW isn't evaluated</span>
     <span class="sql">ELSE</span>
