@@ -1,5 +1,5 @@
 # use-case-temporal-db
-An use case for Temporal DB
+Temporal tables (in particular valid state time) with Postgresql 9.5 with a focus on performance.
 
 .
 .
